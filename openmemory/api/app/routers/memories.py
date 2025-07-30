@@ -16,6 +16,7 @@ from app.models import (
 )
 from app.schemas import MemoryResponse
 from app.utils.memory import get_memory_client
+from app.utils.background_tasks import schedule_background_categorization
 from app.utils.permissions import check_memory_access_permissions
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi_pagination import Page, Params
@@ -44,6 +45,21 @@ def update_memory_state(db: Session, memory_id: UUID, new_state: MemoryState, us
         memory.archived_at = datetime.now(UTC)
     elif new_state == MemoryState.deleted:
         memory.deleted_at = datetime.now(UTC)
+        
+        # CRITICAL FIX: Also remove from Qdrant vector store when deleting
+        # This ensures proper database synchronization
+        try:
+            memory_client = get_memory_client()
+            if memory_client and hasattr(memory_client, 'vector_store') and memory_client.vector_store:
+                # Use mem0's proper deletion method to remove from vector store
+                memory_client.vector_store.delete(vector_id=str(memory_id))
+                logging.info(f"Successfully removed memory {memory_id} from Qdrant vector store")
+            else:
+                logging.warning(f"Memory client or vector store not available - could not remove memory {memory_id} from vector store")
+        except Exception as e:
+            logging.error(f"Failed to remove memory {memory_id} from vector store: {e}")
+            # Continue with PostgreSQL update even if vector store deletion fails
+            # This prevents total failure but logs the issue for debugging
 
     # Record state change
     history = MemoryStatusHistory(
@@ -159,20 +175,25 @@ async def list_memories(
             query = query.order_by(sort_field.desc()) if sort_direction == "desc" else query.order_by(sort_field.asc())
 
 
-    # Get paginated results
-    paginated_results = sqlalchemy_paginate(query, params)
-
-    # Filter results based on permissions
-    filtered_items = []
-    for item in paginated_results.items:
-        if check_memory_access_permissions(db, item, app_id):
-            filtered_items.append(item)
-
-    # Update paginated results with filtered items
-    paginated_results.items = filtered_items
-    paginated_results.total = len(filtered_items)
-
-    return paginated_results
+    # Get paginated results with proper transformation
+    return sqlalchemy_paginate(
+        query,
+        params,
+        transformer=lambda items: [
+            MemoryResponse(
+                id=memory.id,
+                content=memory.content,
+                created_at=int(memory.created_at.timestamp()),
+                state=memory.state.value,
+                app_id=memory.app_id,
+                app_name=memory.app.name if memory.app else "Unknown",
+                categories=[category.name for category in memory.categories],
+                metadata_=memory.metadata_
+            )
+            for memory in items
+            if check_memory_access_permissions(db, memory, app_id)
+        ]
+    )
 
 
 # Get all categories
@@ -188,8 +209,8 @@ async def get_categories(
     # Get unique categories associated with the user's memories
     # Get all memories
     memories = db.query(Memory).filter(Memory.user_id == user.id, Memory.state != MemoryState.deleted, Memory.state != MemoryState.archived).all()
-    # Get all categories from memories
-    categories = [category for memory in memories for category in memory.categories]
+    # Get all categories from memories and convert to strings
+    categories = [category.name for memory in memories for category in memory.categories]
     # Get unique categories
     unique_categories = list(set(categories))
 
@@ -200,11 +221,12 @@ async def get_categories(
 
 
 class CreateMemoryRequest(BaseModel):
-    user_id: str
     text: str
+    user_id: str
     metadata: dict = {}
     infer: bool = True
     app: str = "openmemory"
+    async_mode: bool = False  # Add async_mode parameter
 
 
 # Create new memory
@@ -246,9 +268,16 @@ async def create_memory(
 
     # Try to save to Qdrant via memory_client
     try:
+        # Format text as messages for mem0
+        messages = [{"role": "user", "content": request.text}]
+        
+        # For async_mode, we disable LLM processing in mem0 and handle it in background
+        mem0_infer = request.infer and not request.async_mode
+        
         qdrant_response = memory_client.add(
-            request.text,
+            messages,
             user_id=request.user_id,  # Use string user_id to match search
+            infer=mem0_infer,  # Disable mem0 LLM processing for async_mode
             metadata={
                 "source_app": "openmemory",
                 "mcp_client": request.app,
@@ -269,18 +298,29 @@ async def create_memory(
                     existing_memory = db.query(Memory).filter(Memory.id == memory_id).first()
                     
                     if existing_memory:
-                        # Update existing memory
+                        # Update existing memory with infer and async_mode metadata
                         existing_memory.state = MemoryState.active
                         existing_memory.content = result['memory']
+                        # Update metadata to include infer and async_mode parameters
+                        updated_metadata = existing_memory.metadata_ or {}
+                        updated_metadata.update(request.metadata)
+                        updated_metadata['infer'] = request.infer
+                        updated_metadata['async_mode'] = request.async_mode
+                        existing_memory.metadata_ = updated_metadata
                         memory = existing_memory
                     else:
                         # Create memory with the EXACT SAME ID from Qdrant
+                        # Include infer and async_mode parameters in metadata
+                        memory_metadata = request.metadata.copy() if request.metadata else {}
+                        memory_metadata['infer'] = request.infer
+                        memory_metadata['async_mode'] = request.async_mode
+                        
                         memory = Memory(
                             id=memory_id,  # Use the same ID that Qdrant generated
                             user_id=user.id,
                             app_id=app_obj.id,
                             content=result['memory'],
-                            metadata_=request.metadata,
+                            metadata_=memory_metadata,
                             state=MemoryState.active
                         )
                         db.add(memory)
@@ -296,6 +336,11 @@ async def create_memory(
                     
                     db.commit()
                     db.refresh(memory)
+                    
+                    # Schedule background categorization if async_mode is enabled
+                    if request.async_mode:
+                        schedule_background_categorization(memory_id)
+                    
                     return memory
     except Exception as qdrant_error:
         logging.warning(f"Qdrant operation failed: {qdrant_error}.")

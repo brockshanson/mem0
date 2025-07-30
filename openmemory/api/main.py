@@ -5,7 +5,8 @@ from app.config import DEFAULT_APP_ID, USER_ID
 from app.database import Base, SessionLocal, engine
 from app.mcp_server import setup_mcp_server
 from app.models import App, User
-from app.routers import apps_router, config_router, memories_router, stats_router
+from app.routers import admin_router, apps_router, config_router, memories_router, stats_router
+from app.utils.client_seeding import seed_default_clients
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi_pagination import add_pagination
@@ -71,9 +72,16 @@ def create_default_app():
     finally:
         db.close()
 
-# Create default user on startup
+# Create default user and app on startup
 create_default_user()
 create_default_app()
+
+# Seed default client configurations
+try:
+    seed_result = seed_default_clients()
+    print(f"Client seeding completed: {seed_result}")
+except Exception as e:
+    print(f"Warning: Client seeding failed: {e}")
 
 # Setup MCP server
 setup_mcp_server(app)
@@ -83,6 +91,7 @@ app.include_router(memories_router)
 app.include_router(apps_router)
 app.include_router(stats_router)
 app.include_router(config_router)
+app.include_router(admin_router)
 
 # Add pagination support
 add_pagination(app)

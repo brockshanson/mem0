@@ -187,11 +187,69 @@ class MemoryAccessLog(Base):
         Index('idx_access_app_time', 'app_id', 'accessed_at'),
     )
 
+
+class ClientRegistryStatus(enum.Enum):
+    pending = "pending"
+    approved = "approved"
+    blocked = "blocked"
+    unknown = "unknown"
+
+
+class ClientRegistry(Base):
+    __tablename__ = "client_registry"
+    id = Column(UUID, primary_key=True, default=lambda: uuid.uuid4())
+    client_identifier = Column(String, nullable=False, unique=True, index=True)
+    client_type = Column(String, nullable=False, index=True)  # claude-code, claude-desktop, ollama, etc.
+    model_name = Column(String, nullable=True, index=True)  # claude-3.5-sonnet, gpt-4, etc.
+    client_version = Column(String, nullable=True)
+    endpoint_pattern = Column(String, nullable=False)  # URL pattern for this client
+    status = Column(Enum(ClientRegistryStatus), default=ClientRegistryStatus.pending, index=True)
+    auto_approved = Column(Boolean, default=False)
+    detection_patterns = Column(JSON, default=dict)  # User-agent patterns, headers, etc.
+    metadata_ = Column('metadata', JSON, default=dict)
+    created_at = Column(DateTime, default=get_current_utc_time, index=True)
+    updated_at = Column(DateTime, default=get_current_utc_time, onupdate=get_current_utc_time)
+    last_seen_at = Column(DateTime, nullable=True, index=True)
+
+    __table_args__ = (
+        Index('idx_client_type_status', 'client_type', 'status'),
+        Index('idx_client_model_status', 'model_name', 'status'),
+    )
+
+
+class ClientSession(Base):
+    __tablename__ = "client_sessions"
+    id = Column(UUID, primary_key=True, default=lambda: uuid.uuid4())
+    client_registry_id = Column(UUID, ForeignKey("client_registry.id"), nullable=False, index=True)
+    user_id = Column(UUID, ForeignKey("users.id"), nullable=False, index=True)
+    session_token = Column(String, nullable=False, unique=True, index=True)
+    endpoint_used = Column(String, nullable=False)
+    user_agent = Column(String, nullable=True)
+    ip_address = Column(String, nullable=True)
+    request_headers = Column(JSON, default=dict)
+    confidence_score = Column(Integer, default=100)  # 0-100, detection confidence
+    started_at = Column(DateTime, default=get_current_utc_time, index=True)
+    last_activity_at = Column(DateTime, default=get_current_utc_time, onupdate=get_current_utc_time)
+    ended_at = Column(DateTime, nullable=True)
+
+    client_registry = relationship("ClientRegistry")
+    user = relationship("User")
+
+    __table_args__ = (
+        Index('idx_session_user_client', 'user_id', 'client_registry_id'),
+        Index('idx_session_activity', 'last_activity_at'),
+    )
+
 def categorize_memory(memory: Memory, db: Session) -> None:
     """Categorize a memory using OpenAI and store the categories in the database."""
     try:
-        # Get categories from OpenAI
-        categories = get_categories_for_memory(memory.content)
+        # Extract infer parameter from memory metadata (defaults to True if not present)
+        infer = True
+        if memory.metadata_ and isinstance(memory.metadata_, dict):
+            infer = memory.metadata_.get('infer', True)
+        
+        # Get categories from OpenAI with processing status
+        categories = get_categories_for_memory(memory.content, infer=infer)
 
         # Get or create categories in the database
         for category_name in categories:
@@ -229,7 +287,13 @@ def categorize_memory(memory: Memory, db: Session) -> None:
 
 @event.listens_for(Memory, 'after_insert')
 def after_memory_insert(mapper, connection, target):
-    """Trigger categorization after a memory is inserted."""
+    """Trigger categorization after a memory is inserted, unless async_mode is enabled."""
+    # Check if async_mode is enabled in metadata
+    metadata = target.metadata_ or {}
+    if metadata.get('async_mode', False):
+        # Skip immediate categorization for async mode
+        return
+    
     db = Session(bind=connection)
     categorize_memory(target, db)
     db.close()
@@ -237,7 +301,13 @@ def after_memory_insert(mapper, connection, target):
 
 @event.listens_for(Memory, 'after_update')
 def after_memory_update(mapper, connection, target):
-    """Trigger categorization after a memory is updated."""
+    """Trigger categorization after a memory is updated, unless async_mode is enabled."""
+    # Check if async_mode is enabled in metadata
+    metadata = target.metadata_ or {}
+    if metadata.get('async_mode', False):
+        # Skip immediate categorization for async mode
+        return
+        
     db = Session(bind=connection)
     categorize_memory(target, db)
     db.close()

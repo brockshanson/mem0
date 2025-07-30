@@ -18,8 +18,13 @@ interface AppCardProps {
 
 export function AppCard({ app }: AppCardProps) {
   const router = useRouter();
-  const appConfig =
-    constants[app.name as keyof typeof constants] || constants.default;
+  const appConfig = constants[app.name as keyof typeof constants] || {
+    name: app.name, // Use the actual app name instead of "Default"
+    icon: <div className="w-6 h-6 flex items-center justify-center text-zinc-400">
+            <span className="text-xs font-bold">{app.name.charAt(0).toUpperCase()}</span>
+          </div>,
+    iconImage: null,
+  };
   const isActive = app.is_active;
 
   return (

@@ -31,6 +31,7 @@ import hashlib
 import json
 import os
 import socket
+from typing import Optional
 
 from app.database import SessionLocal
 from app.models import Config as ConfigModel
@@ -134,7 +135,9 @@ def reset_memory_client():
 
 
 def get_default_memory_config():
-    """Get default memory client configuration with sensible defaults."""
+    """Get default memory client configuration with enhanced relationship validation."""
+    from app.utils.enhanced_prompts import ENHANCED_FACT_EXTRACTION_PROMPT, ENHANCED_UPDATE_MEMORY_TEMPLATE
+    
     return {
         "vector_store": {
             "provider": "qdrant",
@@ -142,13 +145,14 @@ def get_default_memory_config():
                 "collection_name": "openmemory",
                 "host": "mem0_store",
                 "port": 6333,
+                "embedding_model_dims": 768,
             }
         },
         "llm": {
             "provider": "openai",
             "config": {
                 "model": "gpt-4o-mini",
-                "temperature": 0.1,
+                "temperature": 0.1,  # Lower temperature for more consistent decisions
                 "max_tokens": 2000,
                 "api_key": "env:OPENAI_API_KEY"
             }
@@ -160,7 +164,10 @@ def get_default_memory_config():
                 "api_key": "env:OPENAI_API_KEY"
             }
         },
-        "version": "v1.1"
+        "version": "v1.1",
+        # Enhanced prompts for stricter relationship validation
+        "custom_fact_extraction_prompt": ENHANCED_FACT_EXTRACTION_PROMPT,
+        "custom_update_memory_prompt": ENHANCED_UPDATE_MEMORY_TEMPLATE
     }
 
 
@@ -189,7 +196,7 @@ def _parse_environment_variables(config_dict):
     return config_dict
 
 
-def get_memory_client(custom_instructions: str = None):
+def get_memory_client(custom_instructions: Optional[str] = None):
     """
     Get or initialize the Mem0 client.
 

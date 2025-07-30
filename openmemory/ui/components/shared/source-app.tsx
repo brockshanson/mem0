@@ -16,6 +16,51 @@ export const constants = {
     icon: <Icon source="/images/claude.webp" />,
     iconImage: "/images/claude.webp",
   },
+  "Claude Desktop (SSE)": {
+    name: "Claude Desktop",
+    icon: <Icon source="/images/claude.webp" />,
+    iconImage: "/images/claude.webp",
+  },
+  "Claude Code": {
+    name: "Claude Code",
+    icon: <Icon source="/images/claude.webp" />,
+    iconImage: "/images/claude.webp",
+  },
+  "Claude VS Code": {
+    name: "Claude VS Code",
+    icon: <Icon source="/images/claude.webp" />,
+    iconImage: "/images/claude.webp", 
+  },
+  "Claude VS Code Extension": {
+    name: "Claude for VS Code",
+    icon: <Icon source="/images/claude.webp" />,
+    iconImage: "/images/claude.webp",
+  },
+  "Claude Web (Chrome)": {
+    name: "Claude Web",
+    icon: <Icon source="/images/claude.webp" />,
+    iconImage: "/images/claude.webp",
+  },
+  "Claude Web (Firefox)": {
+    name: "Claude Web",
+    icon: <Icon source="/images/claude.webp" />,
+    iconImage: "/images/claude.webp",
+  },
+  "Claude Web (Safari)": {
+    name: "Claude Web",
+    icon: <Icon source="/images/claude.webp" />,
+    iconImage: "/images/claude.webp",
+  },
+  "Claude Web (Edge)": {
+    name: "Claude Web",
+    icon: <Icon source="/images/claude.webp" />,
+    iconImage: "/images/claude.webp",
+  },
+  "Claude Mobile": {
+    name: "Claude Mobile",
+    icon: <Icon source="/images/claude.webp" />,
+    iconImage: "/images/claude.webp",
+  },
   openmemory: {
     name: "OpenMemory",
     icon: <Icon source="/images/open-memory.svg" />,
@@ -56,6 +101,36 @@ export const constants = {
     icon: <Icon source="/images/augment.png" />,
     iconImage: "/images/augment.png",
   },
+  "Claude Claude-Desktop (SSE)": {
+    name: "Claude Desktop",
+    icon: <Icon source="/images/claude.webp" />,
+    iconImage: "/images/claude.webp",
+  },
+  "Claude Claude Desktop (SSE)": {
+    name: "Claude Desktop",
+    icon: <Icon source="/images/claude.webp" />,
+    iconImage: "/images/claude.webp",
+  },
+  "Claude Desktop": {
+    name: "Claude Desktop", 
+    icon: <Icon source="/images/claude.webp" />,
+    iconImage: "/images/claude.webp",
+  },
+  "local-user": {
+    name: "Local User",
+    icon: <BiEdit size={18} className="ml-1" />,
+    iconImage: "/images/default.png",
+  },
+  "mcp-client": {
+    name: "MCP Client",
+    icon: <BiEdit size={18} className="ml-1" />,
+    iconImage: "/images/default.png",
+  },
+  "test-client": {
+    name: "Test Client", 
+    icon: <BiEdit size={18} className="ml-1" />,
+    iconImage: "/images/default.png",
+  },
   default: {
     name: "Default",
     icon: <BiEdit size={18} className="ml-1" />,
@@ -64,19 +139,23 @@ export const constants = {
 };
 
 const SourceApp = ({ source }: { source: string }) => {
-  if (!constants[source as keyof typeof constants]) {
+  const appConfig = constants[source as keyof typeof constants];
+  
+  if (!appConfig) {
+    // If no matching config found, use the actual source name instead of "Default"
     return (
-      <div>
-        <BiEdit />
+      <div className="flex items-center gap-2">
+        <BiEdit size={18} className="ml-1" />
         <span className="text-sm font-semibold">{source}</span>
       </div>
     );
   }
+  
   return (
     <div className="flex items-center gap-2">
-      {constants[source as keyof typeof constants].icon}
+      {appConfig.icon}
       <span className="text-sm font-semibold">
-        {constants[source as keyof typeof constants].name}
+        {appConfig.name}
       </span>
     </div>
   );

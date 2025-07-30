@@ -221,3 +221,69 @@ async def update_app_details(
     app.is_active = is_active
     db.commit()
     return {"status": "success", "message": "Updated app details successfully"}
+
+
+@router.delete("/{app_id}")
+async def delete_app(
+    app_id: UUID,
+    force: bool = False,
+    db: Session = Depends(get_db)
+):
+    """
+    Delete an app. By default, only deletes apps with no associated memories.
+    Use force=true to delete apps with deleted memories only.
+    """
+    app = get_app_or_404(db, app_id)
+    
+    # Check if app has any memories (including deleted ones)
+    all_memories = db.query(Memory).filter(Memory.app_id == app_id).all()
+    active_memories = [m for m in all_memories if m.state != MemoryState.deleted]
+    deleted_memories = [m for m in all_memories if m.state == MemoryState.deleted]
+    
+    if active_memories:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Cannot delete app '{app.name}' because it has {len(active_memories)} active memories. "
+                   "Delete all active memories first or deactivate the app instead."
+        )
+    
+    if deleted_memories and not force:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot delete app '{app.name}' because it has {len(deleted_memories)} deleted memories. "
+                   "Use force=true to delete anyway, or these memories will be permanently lost."
+        )
+    
+    # Check if app has any access logs (only check if not forcing)
+    if not force:
+        access_log_count = db.query(MemoryAccessLog).filter(MemoryAccessLog.app_id == app_id).count()
+        if access_log_count > 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot delete app '{app.name}' because it has {access_log_count} access log entries. "
+                       "Use force=true to delete anyway."
+            )
+    
+    # If forcing, delete all associated records
+    if force:
+        # Delete all memories (including deleted ones)
+        for memory in all_memories:
+            db.delete(memory)
+        
+        # Delete all access logs
+        access_logs = db.query(MemoryAccessLog).filter(MemoryAccessLog.app_id == app_id).all()
+        for log in access_logs:
+            db.delete(log)
+    
+    # Safe to delete - app has no active memories
+    app_name = app.name
+    memory_info = f" (removed {len(deleted_memories)} deleted memories)" if force and deleted_memories else ""
+    db.delete(app)
+    db.commit()
+    
+    return {
+        "status": "success", 
+        "message": f"App '{app_name}' deleted successfully{memory_info}",
+        "deleted_app_id": app_id,
+        "deleted_memories": len(deleted_memories) if force else 0
+    }

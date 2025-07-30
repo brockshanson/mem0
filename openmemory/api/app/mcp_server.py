@@ -23,9 +23,16 @@ import uuid
 
 from app.database import SessionLocal
 from app.models import Memory, MemoryAccessLog, MemoryState, MemoryStatusHistory
+from app.utils.client_detection import get_enhanced_client_info, is_client_approved
+from app.utils.unknown_client_handler import UnknownClientHandler
 from app.utils.db import get_user_and_app
 from app.utils.memory import get_memory_client
 from app.utils.permissions import check_memory_access_permissions
+from app.utils.validation import (
+    validate_memory_operations, 
+    should_use_raw_storage, 
+    log_memory_operation_metrics
+)
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.routing import APIRouter
@@ -48,9 +55,94 @@ def get_memory_client_safe():
         logging.warning(f"Failed to get memory client: {e}")
         return None
 
-# Context variables for user_id and client_name
+# Context variables for user_id and enhanced client information
 user_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("user_id")
 client_name_var: contextvars.ContextVar[str] = contextvars.ContextVar("client_name")
+client_info_var: contextvars.ContextVar[dict] = contextvars.ContextVar("client_info")
+
+def detect_claude_client_type(request: Request, base_client_name: str) -> str:
+    """
+    Detect specific Claude client type based on request headers and metadata.
+    
+    Args:
+        request: FastAPI Request object
+        base_client_name: Base client name from URL path
+        
+    Returns:
+        Specific client identifier (e.g., "Claude Desktop", "Claude Code", "Claude VS Code Extension")
+    """
+    headers = request.headers
+    user_agent = headers.get("user-agent", "").lower()
+    
+    # Check for Claude Code specific indicators
+    if "claude-code" in user_agent or "anthropic-claude-code" in user_agent:
+        return "Claude Code"
+    
+    # Check for VS Code extension indicators
+    if "vscode" in user_agent or "visual studio code" in user_agent:
+        return "Claude VS Code Extension"
+    
+    # Check for Desktop app indicators
+    if "electron" in user_agent or "claude-desktop" in user_agent:
+        return "Claude Desktop"
+    
+    # Check for browser-based access
+    for browser in ["chrome", "firefox", "safari", "edge"]:
+        if browser in user_agent:
+            return f"Claude Web ({browser.title()})"
+    
+    # Check for mobile indicators
+    if any(mobile in user_agent for mobile in ["mobile", "android", "iphone", "ipad"]):
+        return "Claude Mobile"
+    
+    # Check request headers for additional context
+    referer = headers.get("referer", "")
+    if "claude.ai" in referer:
+        return "Claude Web"
+    
+    # Check for MCP-specific headers that might indicate client type
+    mcp_client = headers.get("x-mcp-client", "")
+    if mcp_client:
+        return f"Claude {mcp_client.title()}"
+    
+    # Check for custom client identification
+    client_id = headers.get("x-client-id", "") or headers.get("x-client-name", "")
+    if client_id:
+        return f"Claude {client_id.title()}"
+    
+    # Enhanced VS Code detection
+    # Check for VS Code specific patterns
+    vs_code_indicators = [
+        "vscode", "vs-code", "visual-studio-code", 
+        "code-oss", "code-insiders", "cursor"
+    ]
+    
+    # Check if this looks like a VS Code Claude extension vs Claude Code extension
+    if base_client_name and any(indicator in base_client_name.lower() for indicator in vs_code_indicators):
+        return "Claude VS Code"
+    
+    # More specific Claude Code extension detection
+    if base_client_name and "claude-code" in base_client_name.lower():
+        return "Claude Code"
+    
+    # Check User-Agent for VS Code patterns
+    if any(indicator in user_agent.lower() for indicator in vs_code_indicators):
+        return "Claude VS Code"
+    
+    # Fallback to enhanced base name with additional context
+    connection_type = "SSE" if "/sse/" in str(request.url) else "HTTP"
+    
+    # Try to infer from URL patterns or other request characteristics
+    if base_client_name and base_client_name != "claude":
+        # Clean up the client name for better formatting
+        clean_name = base_client_name.replace("-", " ").replace("_", " ").title()
+        
+        # Special handling for known client types
+        if "code" in clean_name.lower() and "claude" not in clean_name.lower():
+            return f"Claude {clean_name}"
+        return f"Claude {clean_name} ({connection_type})"
+    
+    return f"Claude Desktop ({connection_type})"  # Default assumption
 
 # Create a router for MCP endpoints
 mcp_router = APIRouter(prefix="/mcp")
@@ -58,10 +150,11 @@ mcp_router = APIRouter(prefix="/mcp")
 # Initialize SSE transport
 sse = SseServerTransport("/mcp/messages/")
 
-@mcp.tool(description="Add a new memory. This method is called everytime the user informs anything about themselves, their preferences, or anything that has any relevant information which can be useful in the future conversation. This can also be called when the user asks you to remember something.")
-async def add_memories(text: str) -> str:
+@mcp.tool(description="Add a new memory. This method is called everytime the user informs anything about themselves, their preferences, or anything that has any relevant information which can be useful in the future conversation. This can also be called when the user asks you to remember something. Pass 'infer=False' when the text is already summarized or contains structured facts that don't need LLM inference. Pass 'async_mode=True' for faster responses with background categorization.")
+async def add_memories(text: str, infer: bool = True, async_mode: bool = False) -> str:
     uid = user_id_var.get(None)
     client_name = client_name_var.get(None)
+    client_info = client_info_var.get({})
 
     if not uid:
         return "Error: user_id not provided"
@@ -76,39 +169,96 @@ async def add_memories(text: str) -> str:
     try:
         db = SessionLocal()
         try:
-            # Get or create user and app
-            user, app = get_user_and_app(db, user_id=uid, app_id=client_name)
+            # Get or create user and app using client identifier for better tracking
+            app_id = client_info.get('client_identifier', client_name)
+            user, app = get_user_and_app(db, user_id=uid, app_id=app_id)
 
             # Check if app is active
             if not app.is_active:
                 return f"Error: App {app.name} is currently paused on OpenMemory. Cannot create new memories."
 
-            response = memory_client.add(text,
+            # Check if content should use raw storage (minimal content auto-fallback)
+            effective_infer = infer
+            metadata = {
+                "source_app": "openmemory",
+                "mcp_client": client_name,  # Display name
+                "client_identifier": client_info.get('client_identifier', client_name),
+                "client_type": client_info.get('client_type', 'unknown'),
+                "model_name": client_info.get('model_name'),
+                "client_version": client_info.get('client_version'),
+                "endpoint_source": client_info.get('endpoint_source', 'unknown'),
+                "confidence_score": client_info.get('confidence_score', 0),
+                "registry_status": client_info.get('registry_status', 'unknown'),
+            }
+            
+            if should_use_raw_storage(text, infer):
+                effective_infer = False
+                if infer:  # Only add fallback metadata if originally requested inference
+                    metadata["auto_fallback"] = "true"
+                    metadata["fallback_reason"] = "minimal_content"
+                    logging.info(f"Auto-fallback to raw storage for minimal content: '{text}'")
+            
+            # Format text as messages for mem0
+            messages = [{"role": "user", "content": text}]
+            
+            response = memory_client.add(messages,
                                          user_id=uid,
-                                         metadata={
-                                            "source_app": "openmemory",
-                                            "mcp_client": client_name,
-                                        })
+                                         infer=effective_infer,
+                                         metadata=metadata)
 
-            # Process the response and update database
+            # Process the response and update database with validation
             if isinstance(response, dict) and 'results' in response:
-                for result in response['results']:
+                # Apply validation to prevent phantom operations
+                validated_results = validate_memory_operations(response['results'], db, uid)
+                
+                for result in validated_results:
                     memory_id = uuid.UUID(result['id'])
                     memory = db.query(Memory).filter(Memory.id == memory_id).first()
 
                     if result['event'] == 'ADD':
                         if not memory:
+                            # Include enhanced client information and parameters in metadata
+                            memory_metadata = {
+                                'source_app': 'openmemory',
+                                'mcp_client': client_name,  # Display name
+                                'client_identifier': client_info.get('client_identifier', client_name),
+                                'client_type': client_info.get('client_type', 'unknown'),
+                                'model_name': client_info.get('model_name'),
+                                'client_version': client_info.get('client_version'),
+                                'endpoint_source': client_info.get('endpoint_source', 'unknown'),
+                                'confidence_score': client_info.get('confidence_score', 0),
+                                'registry_status': client_info.get('registry_status', 'unknown'),
+                                'infer': infer,
+                                'async_mode': async_mode
+                            }
                             memory = Memory(
                                 id=memory_id,
                                 user_id=user.id,
                                 app_id=app.id,
                                 content=result['memory'],
+                                metadata_=memory_metadata,
                                 state=MemoryState.active
                             )
                             db.add(memory)
                         else:
                             memory.state = MemoryState.active
                             memory.content = result['memory']
+                            # Update metadata to include enhanced client information and parameters
+                            existing_metadata = memory.metadata_ or {}
+                            existing_metadata.update({
+                                'source_app': 'openmemory',
+                                'mcp_client': client_name,  # Display name
+                                'client_identifier': client_info.get('client_identifier', client_name),
+                                'client_type': client_info.get('client_type', 'unknown'),
+                                'model_name': client_info.get('model_name'),
+                                'client_version': client_info.get('client_version'),
+                                'endpoint_source': client_info.get('endpoint_source', 'unknown'),
+                                'confidence_score': client_info.get('confidence_score', 0),
+                                'registry_status': client_info.get('registry_status', 'unknown'),
+                                'infer': infer,
+                                'async_mode': async_mode
+                            })
+                            memory.metadata_ = existing_metadata
 
                         # Create history entry
                         history = MemoryStatusHistory(
@@ -134,7 +284,7 @@ async def add_memories(text: str) -> str:
 
                 db.commit()
 
-            return response
+            return str(response)
         finally:
             db.close()
     except Exception as e:
@@ -146,6 +296,7 @@ async def add_memories(text: str) -> str:
 async def search_memory(query: str) -> str:
     uid = user_id_var.get(None)
     client_name = client_name_var.get(None)
+    client_info = client_info_var.get({})
     if not uid:
         return "Error: user_id not provided"
     if not client_name:
@@ -159,8 +310,9 @@ async def search_memory(query: str) -> str:
     try:
         db = SessionLocal()
         try:
-            # Get or create user and app
-            user, app = get_user_and_app(db, user_id=uid, app_id=client_name)
+            # Get or create user and app using client identifier
+            app_id = client_info.get('client_identifier', client_name)
+            user, app = get_user_and_app(db, user_id=uid, app_id=app_id)
 
             # Get accessible memory IDs based on ACL
             user_memories = db.query(Memory).filter(Memory.user_id == user.id).all()
@@ -244,6 +396,7 @@ async def search_memory(query: str) -> str:
 async def list_memories() -> str:
     uid = user_id_var.get(None)
     client_name = client_name_var.get(None)
+    client_info = client_info_var.get({})
     if not uid:
         return "Error: user_id not provided"
     if not client_name:
@@ -257,8 +410,9 @@ async def list_memories() -> str:
     try:
         db = SessionLocal()
         try:
-            # Get or create user and app
-            user, app = get_user_and_app(db, user_id=uid, app_id=client_name)
+            # Get or create user and app using client identifier
+            app_id = client_info.get('client_identifier', client_name)
+            user, app = get_user_and_app(db, user_id=uid, app_id=app_id)
 
             # Get all memories
             memories = memory_client.get_all(user_id=uid)
@@ -313,6 +467,7 @@ async def list_memories() -> str:
 async def delete_all_memories() -> str:
     uid = user_id_var.get(None)
     client_name = client_name_var.get(None)
+    client_info = client_info_var.get({})
     if not uid:
         return "Error: user_id not provided"
     if not client_name:
@@ -326,8 +481,9 @@ async def delete_all_memories() -> str:
     try:
         db = SessionLocal()
         try:
-            # Get or create user and app
-            user, app = get_user_and_app(db, user_id=uid, app_id=client_name)
+            # Get or create user and app using client identifier
+            app_id = client_info.get('client_identifier', client_name)
+            user, app = get_user_and_app(db, user_id=uid, app_id=app_id)
 
             user_memories = db.query(Memory).filter(Memory.user_id == user.id).all()
             accessible_memory_ids = [memory.id for memory in user_memories if check_memory_access_permissions(db, memory, app.id)]
@@ -374,14 +530,55 @@ async def delete_all_memories() -> str:
         return f"Error deleting memories: {e}"
 
 
+# Enhanced endpoint routing for different client types
+@mcp_router.get("/claude-code/sse/{user_id}")
+@mcp_router.get("/claude-desktop/sse/{user_id}")
+@mcp_router.get("/ollama/sse/{user_id}")
+@mcp_router.get("/vscode-claude/sse/{user_id}")
+@mcp_router.get("/vscode-gpt/sse/{user_id}")
+@mcp_router.get("/vscode-{model}/sse/{user_id}")
+@mcp_router.get("/unknown/sse/{user_id}")
 @mcp_router.get("/{client_name}/sse/{user_id}")
 async def handle_sse(request: Request):
-    """Handle SSE connections for a specific user and client"""
+    """Handle SSE connections for a specific user and client with enhanced detection"""
     # Extract user_id and client_name from path parameters
     uid = request.path_params.get("user_id")
     user_token = user_id_var.set(uid or "")
-    client_name = request.path_params.get("client_name")
-    client_token = client_name_var.set(client_name or "")
+    base_client_name = request.path_params.get("client_name")
+    
+    # Get enhanced client information
+    endpoint_path = str(request.url.path)
+    client_info = get_enhanced_client_info(request, endpoint_path)
+    
+    # Handle unknown/unapproved clients
+    if client_info['client_type'] == 'unknown' or not is_client_approved(client_info['client_identifier']):
+        unknown_handler = UnknownClientHandler()
+        try:
+            # This will either quarantine or allow based on previous approval status
+            result = unknown_handler.handle_unknown_client(
+                # Create a simple detection result object
+                type('ClientDetectionResult', (), client_info)(), 
+                request
+            )
+            if result.get('action') == 'quarantined':
+                logging.warning(f"Client quarantined: {client_info['client_identifier']} - {result.get('reason')}")
+                # Continue with limited functionality
+        except Exception as e:
+            logging.error(f"Error handling unknown client: {e}")
+            # For now, continue with limited access
+    
+    # Set context variables
+    enhanced_client_name = f"{client_info['client_type']}"
+    if client_info['model_name']:
+        enhanced_client_name += f" ({client_info['model_name']})"
+    
+    client_token = client_name_var.set(enhanced_client_name)
+    client_info_token = client_info_var.set(client_info)
+    
+    # Log the detected client for debugging
+    logging.info(f"Enhanced MCP client detection: {client_info['client_identifier']} "
+                f"[Type: {client_info['client_type']}, Model: {client_info.get('model_name', 'N/A')}, "
+                f"Confidence: {client_info['confidence_score']}%]")
 
     try:
         # Handle SSE connection
@@ -399,6 +596,7 @@ async def handle_sse(request: Request):
         # Clean up context variables
         user_id_var.reset(user_token)
         client_name_var.reset(client_token)
+        client_info_var.reset(client_info_token)
 
 
 @mcp_router.post("/messages/")

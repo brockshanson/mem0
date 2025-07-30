@@ -1,4 +1,4 @@
-MEMORY_CATEGORIZATION_PROMPT = """Your task is to assign each piece of information (or “memory”) to one or more of the following categories. Feel free to use multiple categories per item when appropriate.
+MEMORY_CATEGORIZATION_PROMPT = """Your task is to assign each piece of information (or "memory") to one or more of the following categories. Feel free to use multiple categories per item when appropriate.
 
 - Personal: family, friends, home, hobbies, lifestyle
 - Relationships: social network, significant others, colleagues
@@ -25,4 +25,5 @@ Guidelines:
 - Return only the categories under 'categories' key in the JSON format.
 - If you cannot categorize the memory, return an empty list with key 'categories'.
 - Don't limit yourself to the categories listed above only. Feel free to create new categories based on the memory. Make sure that it is a single phrase.
+- The system will automatically add processing status tags ('processed' or 'unprocessed') based on how the memory was created, so do not include these in your response.
 """

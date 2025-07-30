@@ -9,8 +9,7 @@ services:
     image: mem0/openmemory-mcp
     build: api/
     environment:
-      - USER
-      - API_KEY
+      - USER=local-user
     env_file:
       - api/.env
     depends_on:
@@ -29,8 +28,8 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
-      - NEXT_PUBLIC_USER_ID=${USER}
+      - NEXT_PUBLIC_API_URL=http://localhost:8765
+      - NEXT_PUBLIC_USER_ID=local-user
 
 volumes:
   mem0_storage:
