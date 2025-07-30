@@ -18,7 +18,8 @@ from app.schemas import MemoryResponse
 from app.utils.memory import get_memory_client
 from app.utils.background_tasks import schedule_background_categorization
 from app.utils.permissions import check_memory_access_permissions
-from fastapi import APIRouter, Depends, HTTPException, Query
+from app.utils.client_detection import get_enhanced_client_info
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi_pagination import Page, Params
 from fastapi_pagination.ext.sqlalchemy import paginate as sqlalchemy_paginate
 from pydantic import BaseModel
@@ -232,27 +233,35 @@ class CreateMemoryRequest(BaseModel):
 # Create new memory
 @router.post("/")
 async def create_memory(
-    request: CreateMemoryRequest,
-    db: Session = Depends(get_db)
+    memory_request: CreateMemoryRequest,
+    request: Request,
+    db: Session = Depends(get_db)  
 ):
-    user = db.query(User).filter(User.user_id == request.user_id).first()
+    user = db.query(User).filter(User.user_id == memory_request.user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    # Get or create app
-    app_obj = db.query(App).filter(App.name == request.app,
+    
+    # Get enhanced client information from request headers
+    client_info = get_enhanced_client_info(request, str(request.url.path))
+    
+    # Use client identifier as app name for unique app per client/model
+    app_name = client_info.get('client_identifier', memory_request.app)
+    
+    # Get or create app based on client identifier
+    app_obj = db.query(App).filter(App.name == app_name,
                                    App.owner_id == user.id).first()
     if not app_obj:
-        app_obj = App(name=request.app, owner_id=user.id)
+        app_obj = App(name=app_name, owner_id=user.id)
         db.add(app_obj)
         db.commit()
         db.refresh(app_obj)
 
     # Check if app is active
     if not app_obj.is_active:
-        raise HTTPException(status_code=403, detail=f"App {request.app} is currently paused on OpenMemory. Cannot create new memories.")
+        raise HTTPException(status_code=403, detail=f"App {app_name} is currently paused on OpenMemory. Cannot create new memories.")
 
     # Log what we're about to do
-    logging.info(f"Creating memory for user_id: {request.user_id} with app: {request.app}")
+    logging.info(f"Creating memory for user_id: {memory_request.user_id} with app: {app_name} (client: {client_info.get('client_type', 'unknown')})")
     
     # Try to get memory client safely
     try:
@@ -269,18 +278,24 @@ async def create_memory(
     # Try to save to Qdrant via memory_client
     try:
         # Format text as messages for mem0
-        messages = [{"role": "user", "content": request.text}]
+        messages = [{"role": "user", "content": memory_request.text}]
         
         # For async_mode, we disable LLM processing in mem0 and handle it in background
-        mem0_infer = request.infer and not request.async_mode
+        mem0_infer = memory_request.infer and not memory_request.async_mode
         
         qdrant_response = memory_client.add(
             messages,
-            user_id=request.user_id,  # Use string user_id to match search
+            user_id=memory_request.user_id,  # Use string user_id to match search
             infer=mem0_infer,  # Disable mem0 LLM processing for async_mode
             metadata={
                 "source_app": "openmemory",
-                "mcp_client": request.app,
+                "mcp_client": app_name,  # Use detected client identifier
+                "client_identifier": client_info.get('client_identifier', app_name),
+                "client_type": client_info.get('client_type', 'unknown'),
+                "model_name": client_info.get('model_name'),
+                "client_version": client_info.get('client_version'),
+                "endpoint_source": client_info.get('endpoint_source', 'api'),
+                "confidence_score": client_info.get('confidence_score', 0),
             }
         )
         
@@ -303,17 +318,17 @@ async def create_memory(
                         existing_memory.content = result['memory']
                         # Update metadata to include infer and async_mode parameters
                         updated_metadata = existing_memory.metadata_ or {}
-                        updated_metadata.update(request.metadata)
-                        updated_metadata['infer'] = request.infer
-                        updated_metadata['async_mode'] = request.async_mode
+                        updated_metadata.update(memory_request.metadata)
+                        updated_metadata['infer'] = memory_request.infer
+                        updated_metadata['async_mode'] = memory_request.async_mode
                         existing_memory.metadata_ = updated_metadata
                         memory = existing_memory
                     else:
                         # Create memory with the EXACT SAME ID from Qdrant
                         # Include infer and async_mode parameters in metadata
-                        memory_metadata = request.metadata.copy() if request.metadata else {}
-                        memory_metadata['infer'] = request.infer
-                        memory_metadata['async_mode'] = request.async_mode
+                        memory_metadata = memory_request.metadata.copy() if memory_request.metadata else {}
+                        memory_metadata['infer'] = memory_request.infer
+                        memory_metadata['async_mode'] = memory_request.async_mode
                         
                         memory = Memory(
                             id=memory_id,  # Use the same ID that Qdrant generated
@@ -338,7 +353,7 @@ async def create_memory(
                     db.refresh(memory)
                     
                     # Schedule background categorization if async_mode is enabled
-                    if request.async_mode:
+                    if memory_request.async_mode:
                         schedule_background_categorization(memory_id)
                     
                     return memory

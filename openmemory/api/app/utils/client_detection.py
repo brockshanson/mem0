@@ -91,16 +91,17 @@ class EnhancedClientDetector:
                 }
             },
             
-            # OLLAMA patterns
+            # OLLAMA patterns - model-specific detection
             'ollama': {
                 'user_agent_patterns': [
                     r'ollama',
                     r'llama.*cpp',
-                    r'ollama.*client'
+                    r'ollama.*client',
+                    r'ollama-[\w\.\:]+',  # Match ollama-model:version patterns
                 ],
                 'header_patterns': {
-                    'x-client-id': ['ollama'],
-                    'x-model-name': ['llama', 'mistral', 'codellama', 'phi']
+                    'x-client-id': ['ollama', 'ollama-llama3.1:8b', 'ollama-mistral', 'ollama-codellama', 'ollama-phi'],
+                    'x-model-name': ['llama', 'mistral', 'codellama', 'phi', 'llama3.1:8b', 'qwen', 'gemma']
                 }
             },
             
@@ -170,7 +171,8 @@ class EnhancedClientDetector:
         endpoint_patterns = {
             r'/mcp/claude-code/': ('claude-code', 'Claude Code'),
             r'/mcp/claude-desktop/': ('claude-desktop', 'Claude Desktop'),
-            r'/mcp/ollama/': ('ollama', 'OLLAMA'),
+            r'/mcp/ollama-([^/]+)/': ('ollama', 'OLLAMA'),  # Model-specific Ollama endpoints
+            r'/mcp/ollama/': ('ollama', 'OLLAMA'),  # Generic Ollama endpoint
             r'/mcp/vscode-claude/': ('claude-vscode', 'Claude VS Code'),
             r'/mcp/vscode-gpt/': ('vscode-gpt', 'GPT VS Code'),
             r'/mcp/vscode-([^/]+)/': ('vscode-generic', 'VS Code'),
@@ -179,19 +181,30 @@ class EnhancedClientDetector:
         for pattern, (client_type, display_name) in endpoint_patterns.items():
             match = re.search(pattern, endpoint_path)
             if match:
-                # Extract model name from VS Code patterns
+                # Extract model name from patterns
                 model_name = None
-                if 'vscode-' in pattern and match.groups():
+                if 'ollama-' in pattern and match.groups():
+                    # Extract Ollama model name (e.g., ollama-llama3.1:8b)
+                    model_name = match.group(1).replace(':', '_')  # Replace : with _ for URL safety
+                elif 'vscode-' in pattern and match.groups():
                     model_name = match.group(1)
                 elif client_type == 'vscode-gpt':
                     model_name = 'gpt-4'
                 elif client_type == 'claude-vscode':
                     model_name = 'claude-3.5-sonnet'  # default
                 
+                # Create unique identifier for model-specific clients
+                if client_type == 'ollama' and model_name:
+                    client_identifier = f"ollama-{model_name}"
+                    display_name = f"OLLAMA ({model_name.replace('_', ':')})"
+                else:
+                    client_identifier = f"{client_type}-{model_name}" if model_name else client_type
+                    display_name = None
+                
                 return ClientDetectionResult(
-                    client_identifier=f"{client_type}-{model_name}" if model_name else client_type,
+                    client_identifier=client_identifier,
                     client_type=client_type,
-                    model_name=model_name,
+                    model_name=model_name.replace('_', ':') if model_name else None,  # Convert back for storage
                     endpoint_source="endpoint"
                 )
         
@@ -199,6 +212,19 @@ class EnhancedClientDetector:
     
     def _detect_from_headers(self, headers: Dict[str, str]) -> Optional[ClientDetectionResult]:
         """Detect client from HTTP headers."""
+        # Check for OpenMemory Web UI first (highest priority)
+        referer = headers.get('referer', '')
+        origin = headers.get('origin', '')
+        
+        # If request comes from localhost:3000 (Web UI), it's OpenMemory
+        if 'localhost:3000' in referer or 'localhost:3000' in origin:
+            return ClientDetectionResult(
+                client_identifier='openmemory',
+                client_type='openmemory',
+                confidence_score=100,
+                endpoint_source='web_ui'
+            )
+        
         # Check for explicit client identification headers
         client_id = headers.get('x-client-id', '')
         mcp_client = headers.get('x-mcp-client', '')
@@ -218,6 +244,17 @@ class EnhancedClientDetector:
                 'vscode': 'vscode-generic',
                 'ollama': 'ollama'
             }
+            
+            # Handle model-specific Ollama clients (e.g., ollama-llama3.1:8b)
+            if client_identifier.lower().startswith('ollama-'):
+                client_type = 'ollama'
+                # Use the full identifier for model-specific clients
+                return ClientDetectionResult(
+                    client_identifier=client_identifier,
+                    client_type=client_type,
+                    model_name=model_name if model_name else client_identifier.split('-', 1)[1],
+                    client_version=client_version if client_version else None
+                )
             
             client_type = client_type_mapping.get(client_identifier.lower(), 'unknown')
             

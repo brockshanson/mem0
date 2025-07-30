@@ -12,17 +12,27 @@ export const Icon = ({ source }: { source: string }) => {
 
 export const constants = {
   claude: {
-    name: "Claude",
+    name: "Claude Web",
     icon: <Icon source="/images/claude.webp" />,
     iconImage: "/images/claude.webp",
   },
-  "Claude Desktop (SSE)": {
+  "claude-desktop": {
     name: "Claude Desktop",
     icon: <Icon source="/images/claude.webp" />,
     iconImage: "/images/claude.webp",
   },
-  "Claude Code": {
+  "claude-code": {
     name: "Claude Code",
+    icon: <Icon source="/images/claude.webp" />,
+    iconImage: "/images/claude.webp",
+  },
+  "Claude Claude Desktop (SSE)": {
+    name: "Claude Desktop (SSE)",
+    icon: <Icon source="/images/claude.webp" />,
+    iconImage: "/images/claude.webp",
+  },
+  "Claude Code": {
+    name: "Claude Code (VS Code)",
     icon: <Icon source="/images/claude.webp" />,
     iconImage: "/images/claude.webp",
   },
@@ -37,29 +47,60 @@ export const constants = {
     iconImage: "/images/claude.webp",
   },
   "Claude Web (Chrome)": {
-    name: "Claude Web",
-    icon: <Icon source="/images/claude.webp" />,
-    iconImage: "/images/claude.webp",
+    name: "Untagged",
+    icon: <BiEdit size={18} className="ml-1" />,
+    iconImage: "/images/default.png",
   },
   "Claude Web (Firefox)": {
-    name: "Claude Web",
-    icon: <Icon source="/images/claude.webp" />,
-    iconImage: "/images/claude.webp",
+    name: "Untagged",
+    icon: <BiEdit size={18} className="ml-1" />,
+    iconImage: "/images/default.png",
   },
   "Claude Web (Safari)": {
-    name: "Claude Web",
-    icon: <Icon source="/images/claude.webp" />,
-    iconImage: "/images/claude.webp",
+    name: "Untagged",
+    icon: <BiEdit size={18} className="ml-1" />,
+    iconImage: "/images/default.png",
   },
   "Claude Web (Edge)": {
-    name: "Claude Web",
-    icon: <Icon source="/images/claude.webp" />,
-    iconImage: "/images/claude.webp",
+    name: "Untagged",
+    icon: <BiEdit size={18} className="ml-1" />,
+    iconImage: "/images/default.png",
   },
   "Claude Mobile": {
     name: "Claude Mobile",
     icon: <Icon source="/images/claude.webp" />,
     iconImage: "/images/claude.webp",
+  },
+  "Claude Web": {
+    name: "Untagged",
+    icon: <BiEdit size={18} className="ml-1" />,
+    iconImage: "/images/default.png",
+  },
+  // New Untagged patterns
+  "Untagged (Chrome)": {
+    name: "Untagged",
+    icon: <BiEdit size={18} className="ml-1" />,
+    iconImage: "/images/default.png",
+  },
+  "Untagged (Firefox)": {
+    name: "Untagged",
+    icon: <BiEdit size={18} className="ml-1" />,
+    iconImage: "/images/default.png",
+  },
+  "Untagged (Safari)": {
+    name: "Untagged",
+    icon: <BiEdit size={18} className="ml-1" />,
+    iconImage: "/images/default.png",
+  },
+  "Untagged (Edge)": {
+    name: "Untagged",
+    icon: <BiEdit size={18} className="ml-1" />,
+    iconImage: "/images/default.png",
+  },
+  "Untagged": {
+    name: "Untagged",
+    icon: <BiEdit size={18} className="ml-1" />,
+    iconImage: "/images/default.png",
   },
   openmemory: {
     name: "OpenMemory",
@@ -101,11 +142,6 @@ export const constants = {
     icon: <Icon source="/images/augment.png" />,
     iconImage: "/images/augment.png",
   },
-  "Claude Claude-Desktop (SSE)": {
-    name: "Claude Desktop",
-    icon: <Icon source="/images/claude.webp" />,
-    iconImage: "/images/claude.webp",
-  },
   "Claude Claude Desktop (SSE)": {
     name: "Claude Desktop",
     icon: <Icon source="/images/claude.webp" />,
@@ -130,6 +166,42 @@ export const constants = {
     name: "Test Client", 
     icon: <BiEdit size={18} className="ml-1" />,
     iconImage: "/images/default.png",
+  },
+  // Ollama Models
+  "ollama-llama3.1:8b": {
+    name: "Llama 3.1 8B",
+    icon: <div className="w-4 h-4 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white text-xs font-bold">🦙</div>,
+    iconImage: null,
+  },
+  "ollama-deepseek-r1:latest": {
+    name: "DeepSeek R1",
+    icon: <div className="w-4 h-4 rounded-full bg-gradient-to-br from-red-500 to-orange-600 flex items-center justify-center text-white text-xs font-bold">🧠</div>,
+    iconImage: null,
+  },
+  "ollama-mistral:7b": {
+    name: "Mistral 7B",
+    icon: <div className="w-4 h-4 rounded-full bg-gradient-to-br from-green-500 to-teal-600 flex items-center justify-center text-white text-xs font-bold">M</div>,
+    iconImage: null,
+  },
+  "ollama-codellama:13b": {
+    name: "Code Llama 13B",
+    icon: <div className="w-4 h-4 rounded-full bg-gradient-to-br from-purple-500 to-pink-600 flex items-center justify-center text-white text-xs font-bold">💻</div>,
+    iconImage: null,
+  },
+  "ollama-qwen2:7b": {
+    name: "Qwen2 7B",
+    icon: <div className="w-4 h-4 rounded-full bg-gradient-to-br from-yellow-500 to-red-600 flex items-center justify-center text-white text-xs font-bold">Q</div>,
+    iconImage: null,
+  },
+  "ollama-phi4:latest": {
+    name: "Phi-4",
+    icon: <div className="w-4 h-4 rounded-full bg-gradient-to-br from-indigo-500 to-blue-600 flex items-center justify-center text-white text-xs font-bold">Φ</div>,
+    iconImage: null,
+  },
+  "ollama-gemma3:latest": {
+    name: "Gemma 3",
+    icon: <div className="w-4 h-4 rounded-full bg-gradient-to-br from-pink-500 to-red-600 flex items-center justify-center text-white text-xs font-bold">💎</div>,
+    iconImage: null,
   },
   default: {
     name: "Default",
